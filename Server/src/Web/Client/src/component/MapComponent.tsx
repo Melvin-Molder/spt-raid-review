@@ -3,8 +3,11 @@
 import { useEffect, useRef, useMemo, useCallback, useLayoutEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate, useLoaderData, Link } from 'react-router-dom';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
-import _, { forIn, transform } from 'lodash';
+import _, { forIn, map, transform } from 'lodash';
 import ResizeObserver from 'resize-observer-polyfill';
+
+import BotMapping from '../assets/botMapping.json'
+import ItemEnMapping from '../assets/en.json'
 
 import { msToHMS } from '../pages/Profile.js'
 import L from 'leaflet';
@@ -16,7 +19,7 @@ import 'leaflet-fullscreen/dist/leaflet.fullscreen.css';
 import '../modules/leaflet-control-coordinates.js';
 import '../modules/leaflet-control-groupedlayer.js';
 import '../modules/leaflet-control-raid-info.js';
-import { calculateNewPosition, findInsertIndex } from '../modules/utils'
+import { calculateNewPosition, findInsertIndex } from '../modules/utils.js'
 
 import './Map.css'
 
@@ -114,89 +117,6 @@ function getBounds(bounds) {
     //return [[bounds[0][1], bounds[0][0]], [bounds[1][1], bounds[1][0]]];
 }
 
-function markerIsOnLayer(marker, layer) {
-    if (!layer.options.extents) {
-        return true;
-    }
-    var top = marker.options.top || marker.options.position.y;
-    var bottom = marker.options.bottom || marker.options.position.y;
-    for (const extent of layer.options.extents) {
-        if (top >= extent.height[0] && bottom < extent.height[1]) {
-            let containedType = 'partial';
-            if (bottom >= extent.height[0] && top <= extent.height[1]) {
-                containedType = 'full';
-            }
-            if (extent.bounds) {
-                for (const boundsArray of extent.bounds) {
-                    const bounds = getBounds(boundsArray);
-                    if (bounds.contains(pos(marker.options.position))) {
-                        return containedType;
-                    }
-                }
-            } else {
-                return containedType;
-            }
-        }
-    }
-    return false;
-}
-
-function markerIsOnActiveLayer(marker) {
-    if (!marker.options.position) {
-        return true;
-    }
-
-    const map = marker._map;
-
-    // check if marker is completely contained by inactive layer
-    const overlays = map.layerControl._layers.map(l => l.layer).filter(l => Boolean(l.options.extents) && l.options.overlay);
-    for (const layer of overlays) {
-        for (const extent of layer.options.extents) {
-            if (markerIsOnLayer(marker, layer) === 'full' && !map.hasLayer(layer) && extent.bounds) {
-                return false;
-            }
-        }
-    }
-
-    // check if marker is on active overlay
-    const activeOverlay = Object.values(map._layers).find(l => l.options?.extents && l.options?.overlay);
-    if (activeOverlay && markerIsOnLayer(marker, activeOverlay)) {
-        return true;
-    }
-
-    // check if marker is on base layer
-    const baseLayer = Object.values(map._layers).find(l => l.options?.extents && !L.options?.overlay);
-    if (!activeOverlay && markerIsOnLayer(marker, baseLayer)) {
-        return true;
-    }
-
-    return false;
-}
-
-function checkMarkerForActiveLayers(event) {
-    const marker = event.target || event;
-    const outline = marker.options.outline;
-    const onLevel = markerIsOnActiveLayer(marker);
-    if (onLevel) {
-        marker._icon?.classList.remove('off-level');
-        if (outline) {
-            outline._path?.classList.remove('off-level');
-        }
-    } else {
-        marker._icon?.classList.add('off-level');
-        if (outline) {
-            outline._path?.classList.add('off-level');
-        }
-    }
-    /*if (marker.options.activeQuest === true) {
-        marker._icon.classList.add('active-quest-marker');
-        marker._icon.classList.remove('inactive-quest-marker');
-    } else if (marker.options.activeQuest === false) {
-        marker._icon.classList.remove('active-quest-marker');
-        marker._icon.classList.add('inactive-quest-marker');
-    }*/
-}
-
 function mouseHoverOutline(event) {
     const outline = event.target.options.outline;
     if (event.originalEvent.type === 'mouseover') {
@@ -215,71 +135,35 @@ function toggleForceOutline(event) {
     activateMarkerLayer(event);
 }
 
-function activateMarkerLayer(event) {
-    const marker = event.target || event;
-    if (markerIsOnActiveLayer(marker)) {
-        return;
-    }
-    const activeLayers = Object.values(marker._map._layers).filter(l => l.options?.extents && l.options?.overlay);
-    for (const layer of activeLayers) {
-        layer.removeFrom(marker._map);
-    }
-    const heightLayers = marker._map.layerControl._layers.filter(l => l.layer.options.extents && l.layer.options.overlay).map(l => l.layer);
-    for (const layer of heightLayers) {
-        if (markerIsOnLayer(marker, layer)) {
-            layer.addTo(marker._map);
-            break;
-        }
-    }
-}
-
-function outlineToPoly(outline) {
-    if (!outline) return [];
-    return outline.map(vector => [vector.z, vector.x]);
-}
-
-function addElevation(item, popup) {
-    if (!showElevation) {
-        return;
-    }
-    const elevationContent = L.DomUtil.create('div', undefined, popup);
-    elevationContent.textContent = `Elevation: ${item.position.y.toFixed(2)}`;
-    if (item.top && item.bottom && item.top !== item.position.y && item.bottom !== item.position.y) {
-        const heightContent = L.DomUtil.create('div', undefined, popup);
-        heightContent.textContent = `Top ${item.top.toFixed(2)}, bottom: ${item.bottom.toFixed(2)}`;
-    }
-}
-
-function calculateProportionalRadius(mapBounds) {
-    const baseRadius = 0.5;
-
+function calculateProportionalRadius(mapBounds, zoomLevel) {
+    const baseRadius = 2;
     const [maxLon, minLat] = mapBounds[0];
     const [minLon, maxLat] = mapBounds[1];
     
     const width = maxLon - minLon;
     const height = maxLat - minLat;
-  
-    // Assuming width is our reference size
-    const referenceWidth = 145.5; // This can be your original reference width
-  
+
+    const referenceWidth = 145.5;
     const scalingFactor = width / referenceWidth;
-  
-    return baseRadius * scalingFactor;
-};
+    
+    const zoomAdjustment = Math.pow(2, zoomLevel - 1);
+
+    return baseRadius * scalingFactor / zoomAdjustment;
+}
   
 const colors = [
     "#3357FF", // Blue
-    "#FF5733", // Red-Orange
-    "#33FF57", // Green
-    "#FF33A1", // Pink
-    "#33FFF3", // Cyan
-    "#FF33E9", // Magenta
     "#FFD433", // Yellow
-    "#8D33FF", // Purple
-    "#33FF8D", // Light Green
+    "#33FFF3", // Cyan
+    "#9370DB", // MediumPurple
+    "#BC8F8F", // RosyBrown
+    "#FF5733", // Red-Orange
+    "#7FFFD4", // Aquamarine
+    "#FFFF99", // Canary
+    "#ae85f9", // Light Purple
     "#FF9633", // Orange
     "#3366FF", // Royal Blue
-    "#FF3380", // Hot Pink
+    "#B87333", // Copper
     "#FFA533", // Light Orange
     "#33FFAF", // Mint Green
     "#5733FF", // Indigo
@@ -291,7 +175,7 @@ const colors = [
     "#B833FF", // Violet
     "#33FF57", // Lime
     "#33FF57", // Forest Green
-    "#FF3333", // Red
+    "#660000", // Blood red
     "#3399FF", // Sky Blue
     "#FF33B8", // Rose
     "#8CFF33", // Lime Green
@@ -306,7 +190,7 @@ const colors = [
     "#33FF57", // Medium Sea Green
     "#FF33E9", // Orchid
     "#FFD433", // Khaki
-    "#FF33A1", // Hot Pink
+    "#ae85f9", // Light Purple
     "#FF33D4", // Light Pink
     "#8D33FF", // Plum
     "#33FFF3", // Light Cyan
@@ -317,16 +201,20 @@ const colors = [
     "#33FFF3", // Aqua
 ];
 
-export default function Map({ raidData, profileId, raidId, positions }) {
+export default function MapComponent({ raidData, profileId, raidId, positions }) {
     const navigate = useNavigate();
     const [ searchParams ] = useSearchParams();
     const [ currentMap, setCurrentMap ] = useState('')
 
     // Map
     const [ availableLayers, setAvailableLayers ] = useState([]);
+    const [ availableStyles, serAvailableStyles ] = useState([]);
+    const [ selectedStyle, setSelectedStyle ] = useState('svg');
     const [ selectedLayer, setSelectedLayer ] = useState('');
-    const [ followPlayer, setFollowPlayer ] = useState(9999);
+    const [ followPlayer, setFollowPlayer ] = useState(null);
     const [ followPlayerZoomed, setFollowPlayerZoomed ] = useState(false);
+    const [ calculatedPlayerInfo, setCalculatedPlayerInfo ] = useState({});
+    const [ calculatedLayerInfo, setCalculatedLayerInfo ] = useState({});
     const [ playerFocus, setPlayerFocus ] = useState(null);
     const [ proportionalScale, setProportionalScale ] = useState(0);
 
@@ -380,44 +268,32 @@ export default function Map({ raidData, profileId, raidId, positions }) {
         };
 
         setCurrentMap(locations[raidData.location]);
-
+        // setCurrentMap("interchange");
+        
         const newEvents = []
-        for (let i = 0; i < raidData.kills.length; i++) {
-            const kill = raidData.kills[i];
-            newEvents.push({
-                time: kill.time,
-                profileId: kill.profileId,
-                profileNickname: raidData.players.find(p => p.profileId === kill.profileId).name,
-                killedId: kill.killedId,
-                killedNickname: raidData.players.find(p => p.profileId === kill.killedId).name,
-                weapon: kill.weapon,
-                distance: Number(kill.distance),
-                source: JSON.parse(kill.positionKiller),
-                target: JSON.parse(kill.positionKilled)
-            })
+        if (raidData && raidData.players) { 
+            for (let i = 0; i < raidData.kills.length; i++) {
+                const kill = raidData.kills[i];
+
+                const profileNickname = raidData.players.find(p => p.profileId === kill.profileId);
+                const killedNickname = raidData.players.find(p => p.profileId === kill.killedId);
+
+                newEvents.push({
+                    time: kill.time,
+                    profileId: kill.profileId,
+                    profileNickname : profileNickname ? profileNickname.name : 'Unknown',
+                    killedId: kill.killedId,
+                    killedNickname : killedNickname ? killedNickname.name  : 'Unknown',
+                    weapon: kill.weapon,
+                    distance: Number(kill.distance),
+                    source: JSON.parse(kill.positionKiller),
+                    target: JSON.parse(kill.positionKilled)
+                });
+            }
         }
 
         setEvents(newEvents);
     }, [raidData])
-
-    // useEffect(() => {
-    //     let viewableHeight = window.innerHeight - document.querySelector('.navigation')?.offsetHeight || 0;
-    //     if (viewableHeight < 100) {
-    //         viewableHeight = window.innerHeight;
-    //     }
-
-    //     document.documentElement.style.setProperty(
-    //         '--display-height',
-    //         `${viewableHeight}px`,
-    //     );
-
-    //     return function cleanup() {
-    //         document.documentElement.style.setProperty(
-    //             '--display-height',
-    //             `auto`,
-    //         );
-    //     };
-    // });
 
     const ref = useRef();
     const mapRef = useRef(null);
@@ -438,7 +314,17 @@ export default function Map({ raidData, profileId, raidId, positions }) {
     let allMaps = useMapImages();
 
     const mapData = useMemo(() => {
-        return allMaps[currentMap];
+        const map = allMaps[currentMap];
+
+        if (map && map.layers) {
+            let newAvailableLayers = map.layers.map(x => ({ name: x.name, value: x.name }));
+            setAvailableLayers([{ name: 'Base', value: '' }, ...newAvailableLayers]);
+
+            let newAvailableStyles = [!map.tilePath || { name: 'Satellite', value: 'tile' }, !map.svgPath || { name: 'Map', value: 'svg' }].filter(f => f);
+            serAvailableStyles(newAvailableStyles);
+        }
+
+        return map;
     }, [allMaps, currentMap]);
 
     // Map Renderer
@@ -446,16 +332,12 @@ export default function Map({ raidData, profileId, raidId, positions }) {
         if (!mapData || mapData.projection !== 'interactive') {
             return;
         }
-
-        if (mapData.layers !== undefined) {
-            let newAvailableLayers = mapData.layers.map(x => { return { name: x.name, value: x.name } });
-            setAvailableLayers([{ name: 'Base', value: '' }, ...newAvailableLayers]);
-        }
-
+    
         let mapCenter = [0, 0];
-        let mapZoom = mapData.minZoom+1;
+        let mapZoom = mapData.minZoom + 1;
         let mapViewRestored = false;
         const maxZoom = Math.max(7, mapData.maxZoom);
+        
         if (mapRef.current?._leaflet_id) {
             if (mapRef.current.options.id === mapData.id) {
                 if (mapViewRef.current.center) {
@@ -473,9 +355,7 @@ export default function Map({ raidData, profileId, raidId, positions }) {
             }
             mapRef.current.remove();
         }
-
-        setProportionalScale(calculateProportionalRadius(mapData.bounds));
-
+    
         const map = L.map('leaflet-map', {
             maxBounds: getScaledBounds(mapData.bounds, 1.5),
             center: mapCenter,
@@ -490,40 +370,27 @@ export default function Map({ raidData, profileId, raidId, positions }) {
             id: mapData.id,
         });
 
+        const zoomLevel = map.getZoom();
+        setProportionalScale(calculateProportionalRadius(mapData.bounds, zoomLevel));
         SET_MAP(map);
-        
-        map.on('zoom', (e) => {
-            mapViewRef.current.zoom = map.getZoom();
-        });
 
-        map.on('move', (e) => {
+        const updateProportionalScale = () => {
+            const zoomLevel = map.getZoom();
+            const newProportionalScale = calculateProportionalRadius(mapData.bounds, zoomLevel);
+            setProportionalScale(newProportionalScale);
+        };
+    
+        map.on('zoom', () => {
+            mapViewRef.current.zoom = map.getZoom();
+            updateProportionalScale();
+        });
+    
+        map.on('move', () => {
             mapViewRef.current.center = map.getCenter();
         });
-
-        const addLayer = (layer, layerKey, groupKey, layerName) => {
-            layer.key = layerKey;
-            const layerOptions = getLayerOptions(layerKey, groupKey, layerName);
-            if (!layerOptions.layerHidden) {
-                layer.addTo(map);
-            }
-            layerControl.addOverlay(layer, layerOptions.layerName, layerOptions);
-        };
-
-        L.control.coordinates({
-            decimals: 2,
-            labelTemplateLat: 'z: {y}',
-            labelTemplateLng: 'x: {x}',
-            enableUserInput: false,
-            wrapCoordinate: false,
-            position: 'bottomright',
-
-            customLabelFcn: (latLng, opts) => {
-                return `x: ${latLng.lng.toFixed(2)} z: ${latLng.lat.toFixed(2)}`;
-            }
-        }).addTo(map);
-
+    
         const bounds = getBounds(mapData.bounds);
-        const layerOptions = {
+        const baseLayerOptions = {
             maxZoom: maxZoom,
             maxNativeZoom: mapData.maxZoom,
             extents: [
@@ -534,190 +401,256 @@ export default function Map({ raidData, profileId, raidId, positions }) {
             ],
             type: 'map-layer',
         };
-
-        if (selectedLayer === '') {
-            layerOptions.opacity = 1;
-        } else {
-            layerOptions.opacity = 0.3;
-        }
-
-        let tileLayer = false;
-        const baseLayers = [];
+    
         const tileSize = mapData.tileSize || 256;
-        let svgLayer = true;
-        if (mapData.svgPath) {
+    
+        // Create separate layer groups for base layers and overlay layers
+        const baseLayerGroup = L.layerGroup().addTo(map);
+        const overlayLayerGroup = L.layerGroup().addTo(map);
+    
+        // Add base layers
+        if (mapData.tilePath && selectedStyle === 'tile') {
+            const tileLayer = L.tileLayer(mapData.tilePath, {
+                tileSize,
+                bounds,
+                ...baseLayerOptions,
+            });
+            baseLayerGroup.addLayer(tileLayer);
+        }
+    
+        if (mapData.svgPath && selectedStyle === 'svg') {
             const svgBounds = mapData.svgBounds ? getBounds(mapData.svgBounds) : bounds;
-            svgLayer = L.imageOverlay(mapData.svgPath, svgBounds, layerOptions);
-            baseLayers.push(svgLayer);
+            const svgLayer = L.imageOverlay(mapData.svgPath, svgBounds, baseLayerOptions);
+            baseLayerGroup.addLayer(svgLayer);
         }
-        let baseLayer = svgLayer ? svgLayer : tileLayer;
-        baseLayer.addTo(map);
-
-        if (mapData.layer) {
-          for (const layer of mapData.layers) {
-            let heightLayer;
-
-            const layerOptions = {
-              name: layer.name,
-              extents: layer.extents || baseLayer.options?.extents,
-              type: "map-layer",
-              overlay: Boolean(layer.extents),
-            };
-
-            heightLayer = L.imageOverlay(layer.svgPath, bounds, layerOptions);
-
-            if (
-              selectedLayer === layer.name ||
-              mapViewRef.current.layer === layer.name
-            ) {
-              heightLayer.addTo(map);
-            } else if (!selectedLayer && layer.show) {
-              heightLayer.addTo(map);
-            }
-          }
-        }
-
-        // Set default zoom level
-        // map.fitBounds(bounds);
-        // map.fitWorld({ maxZoom: Math.max(mapData.maxZoom, mapData.minZoom) });
-
-        // maxBounds are bigger than the map and the map center is not in 0,0 so we need to move the view to real center
-        // console.log("Center:", L.latLngBounds(bounds).getCenter(true));
-        if (!mapViewRestored) {
-            map.setView(L.latLngBounds(bounds).getCenter(true), undefined, {animate: false});
-        }
-
-        mapRef.current = map;
-
-        const mapDiv = document.getElementById('leaflet-map');
-        const resizeObserver = new ResizeObserver(() => {
-            map.invalidateSize();
-            window.dispatchEvent(new Event('resize'));
-        });
-        resizeObserver.observe(mapDiv);
-
-    }, [mapData, mapRef, navigate, mapViewRef, selectedLayer]);
-
-    // Positon Renderer
-    useEffect(() => {             
-
-        let times = [];
-
-        if (MAP) {
-            clearMap(MAP)
-        }
-
-        for (let i = 0; i < positions.length; i++) {
-            const playerPositions = positions[i];
-            const cleanPositions = [];
-            let currentDirection = 0;
-            
-            const currentIndexId = playerPositions[0].profileId;
-            const isPlayerDead = events.find(e => e.killedId === currentIndexId && e.time < timeEndLimit);
-
-            for (let j = 0; j < playerPositions.length; j++) {
-                const playerPosition = playerPositions[j];
-                times.push(playerPosition.time);
-
-
-                if (timeEndLimit && timeStartLimit) {
-                    if (playerPosition.time > (!isPlayerDead ? timeStartLimit : (timeEndLimit * -1000)) && playerPosition.time < timeEndLimit ) {
-                        cleanPositions.push([playerPosition.z, playerPosition.x])
-                    }
+    
+        // Add overlay layers
+        if (mapData.layers) {
+            for (let i = 0; i < mapData.layers.length; i++) {
+                const layer = mapData.layers[i];
+                const layerOptions = {
+                    ...baseLayerOptions,
+                    name: layer.name,
+                    extents: layer.extents || baseLayerOptions.extents,
+                    type: "map-layer",
+                    overlay: Boolean(layer.extents),
+                };
+        
+                if (layer.tilePath && selectedStyle === 'tile') {
+                    const tileLayer = L.tileLayer(layer.tilePath, {
+                        tileSize,
+                        bounds,
+                        ...layerOptions,
+                    });
+                    overlayLayerGroup.addLayer(tileLayer);
                 }
-
-                if (playerPositions.length - 1 === j) {
-                    currentDirection = playerPosition.dir;
+        
+                if (layer.svgPath && selectedStyle === 'svg') {
+                    const svgBounds = layer.svgBounds ? getBounds(layer.svgBounds) : bounds;
+                    const svgLayer = L.imageOverlay(layer.svgPath, svgBounds, layerOptions);
+                    overlayLayerGroup.addLayer(svgLayer);
                 }
-
             }
-
-            const pickedColor = colors[i % colors.length];
-
-            // Hide player movement if enabled
-            if (!hidePlayers && MAP && cleanPositions.length > 0) {
-
-                // If player is focused, opacques out all other players
-                if (playerFocus !== null && playerFocus === i) {
-                    L.polyline(cleanPositions, { color: pickedColor, weight: 4, opacity: 1 }).addTo(MAP).addTo(MAP).on('click', () => { setFollowPlayer(i); setFollowPlayerZoomed(false);});
-                    L.circle(cleanPositions[cleanPositions.length - 1], { radius: proportionalScale, color: pickedColor, fillOpacity: 1, fillRule: 'nonzero' }).addTo(MAP).on('click', () => {setFollowPlayer(i); setFollowPlayerZoomed(false);});
+        }
+        // Set initial visibility based on selectedLayer
+        if (selectedLayer === '') {
+            baseLayerGroup.addTo(map);
+        } else {
+            overlayLayerGroup.addTo(map);
+        }
+    
+        // Function to handle layer visibility and opacity based on selectedLayer
+        const toggleLayers = () => {
+            // Set opacity for base layers
+            baseLayerGroup.eachLayer(layer => {
+                if (selectedLayer === '') {
+                    layer.setOpacity(1); // Active layer
                 } else {
-                    L.polyline(cleanPositions, { color: pickedColor, weight: 4, opacity: preserveHistory ? 0.1 : isPlayerDead ? 0 : 0.1 }).addTo(MAP).addTo(MAP).on('click', () => {setFollowPlayer(i); setFollowPlayerZoomed(false);});
-                    if (!isPlayerDead) {
-
-                        L.circle(cleanPositions[cleanPositions.length - 1], { radius: proportionalScale, color: pickedColor, opacity: isPlayerDead ? 0 : 0.1, fillOpacity: 1, fillRule: 'nonzero' })
-                        .addTo(MAP);
-
-                        if (followPlayer === i) {
-                            MAP.panTo(cleanPositions[cleanPositions.length - 1], 4)
-                        }
-                    }
+                    layer.setOpacity(0.3); // Inactive layers
                 }
-                
-                // Normal rendering
-                if (playerFocus === null) {
-                    L.polyline(cleanPositions, { color: pickedColor, weight: 4, opacity: preserveHistory ? 0.8 : isPlayerDead ? 0 : 0.8 }).addTo(MAP).addTo(MAP).on('click', () => {setFollowPlayer(i); setFollowPlayerZoomed(false);});
-                    if (!isPlayerDead) {
+            });
 
-                        L.circle(cleanPositions[cleanPositions.length - 1], { radius: proportionalScale, color: pickedColor, fillOpacity: 1, fillRule: 'nonzero' })
-                        .addTo(MAP);
-
-                        if (followPlayer === i) {
-                            if (!followPlayerZoomed) {
-                                MAP.setZoom(3)
-
-                                // This is here to make sure the user can adjust zoom as a player is followed
-                                setFollowPlayerZoomed(true);
-                            }
-                            MAP.panTo(cleanPositions[cleanPositions.length - 1], 4)
-                        }
-                    }
+            // Set opacity for overlay layers
+            overlayLayerGroup.eachLayer(layer => {
+                if (selectedLayer === layer.options.name) {
+                    layer.setOpacity(1); // Active layer
+                } else {
+                    layer.setOpacity(0); // Inactive layers
                 }
+            });
+        };
 
-            }
+    
+        // Toggle layers when selectedLayer changes
+        toggleLayers();
+    
+        if (map && !mapViewRestored) {
+            map.setView(L.latLngBounds(bounds).getCenter(true), undefined, { animate: false });
         }
+    
+        mapRef.current = map;
+    }, [mapData, mapRef, mapViewRef, selectedLayer, selectedStyle]);
+    
+    // Positon Renderer
+    useEffect(() => {    
+        
+        requestAnimationFrame(() => {
 
-        for (let i = 0; i < events.length; i++) {
-            const e = events[i];
-            
-            const toBeIndex = findInsertIndex(e.time, sliderTimes);
-            if (toBeIndex < timeCurrentIndex) {
-                if (!hideEvents && MAP) {
-                    if (preserveHistory || toBeIndex > (timeCurrentIndex - 200)) {
-                        var killerIcon = L.divIcon({className: 'killer-icon', html: `<img src="/target.png" />`});
-                        L.marker([e.source.z, e.source.x], {icon: killerIcon}).addTo(MAP);
-                        L.polyline([[e.source.z, e.source.x],[e.target.z, e.target.x]], { color: 'red', weight: 2, dashArray: [10], dashOffset: 3,  opacity: 0.75 }).addTo(MAP);
+            let times = [];
+
+            if (MAP) {
+                clearMap(MAP, { start: timeStartLimit, end: timeEndLimit });
+            }
+
+            const playerPositionKeys = Object.keys(positions);
+            for (let i = 0; i < playerPositionKeys.length; i++) {
+                const playerId = playerPositionKeys[i];
+                const playerPositions = positions[playerId];
+                const cleanPositions = [];
+                let currentDirection = 0;
+
+                const isPlayerDead = events.find(e => e.killedId === playerId && e.time < timeEndLimit);
+
+                for (let j = 0; j < playerPositions.length; j++) {
+                    const playerPosition = playerPositions[j];
+                    times.push(playerPosition.time);
+
+
+                    if (timeEndLimit && timeStartLimit) {
+                        if (playerPosition.time > (!isPlayerDead ? timeStartLimit : (timeEndLimit * -1000)) && playerPosition.time < timeEndLimit ) {
+                            cleanPositions.push([playerPosition.z, playerPosition.x])
+                        }
+                    }
+
+                    if (playerPositions.length - 1 === j) {
+                        currentDirection = playerPosition.dir;
+                    }
+
+                }
+
+                const index = calculatedPlayerInfo[playerId]?.index || raidData.players.findIndex(p => p.profileId === playerId);
+                // if (!index) continue;
+                const player = calculatedPlayerInfo[playerId]?.player || raidData.players[index];
+                const pickedColor = calculatedPlayerInfo[playerId]?.pickedColor || getPlayerColor(player, index);
+                if (calculatedPlayerInfo[playerId] === undefined) {
+                    let newAddition = { ...calculatedPlayerInfo };
+                    newAddition[playerId] = { player, index, pickedColor }
+                    setCalculatedPlayerInfo(newAddition);
+                }
+
+                // Hide player movement if enabled
+                if (!hidePlayers && MAP && cleanPositions.length > 0) {
+                    let endOfLine = cleanPositions[cleanPositions.length - 1];
+
+                    // Focused Player
+                    if (playerFocus !== null && playerFocus === i) {
+                        L.polyline(cleanPositions, { color: pickedColor, weight: 4, opacity: 1 }).addTo(MAP).addTo(MAP).on('click', () => { setFollowPlayer(playerId); setFollowPlayerZoomed(false);});
+                        L.circle(endOfLine, { radius: proportionalScale, color: pickedColor, fillOpacity: 1, fillRule: 'nonzero' }).addTo(MAP).on('click', () => {setFollowPlayer(playerId); setFollowPlayerZoomed(false);});
+                    } 
+                    
+                    else {
+
+                        let focusedOpacityPolyLine = preserveHistory ? 0.1 : isPlayerDead ? 0 : 0.1;
+                        let focusedOpacityCircle =  isPlayerDead ? 0 : 0.1;
+                        L.polyline(cleanPositions, { color: pickedColor, weight: 4, opacity: focusedOpacityPolyLine }).addTo(MAP).addTo(MAP).on('click', () => {setFollowPlayer(playerId); setFollowPlayerZoomed(false);});
+                        if (!isPlayerDead) {
+
+                            L.circle(endOfLine, { radius: proportionalScale, color: pickedColor, opacity: focusedOpacityCircle, fillOpacity: 1, fillRule: 'nonzero' }).addTo(MAP);
+                            if (followPlayer === playerId) {
+                                MAP.panTo(endOfLine, 4)
+                            }
+                        }
                     }
                     
-                    var deathHtml = `☠️<span class="tooltiptext event event-map text-sm">${e.profileId === e.killedId ? `<strong>${e.profileNickname}</strong><br/>died` : `<strong>${e.profileNickname}</strong><br/>killed<br/><strong>${e.killedNickname}</strong>`}</span>`
-                    var deathIcon = L.divIcon({className: 'death-icon tooltip event', html:deathHtml });
-                    L.marker([e.target.z, e.target.x], {icon: deathIcon}).addTo(MAP).on('click', () => highlight([[e.target.z, e.target.x], [e.source.z, e.source.x]], e.time));
+                    // Normal rendering
+                    if (playerFocus === null) {
+                        let focusedOpacityPolyLine = preserveHistory ? 0.8 : isPlayerDead ? 0 : 0.8;
+                        L.polyline(cleanPositions, { color: pickedColor, weight: 4, opacity: focusedOpacityPolyLine }).addTo(MAP).addTo(MAP).on('click', () => { setFollowPlayer(playerId); setFollowPlayerZoomed(false); });
+                        if (!isPlayerDead) {
+
+                            L.circle(endOfLine, { radius: proportionalScale, color: pickedColor, fillOpacity: 1, fillRule: 'nonzero' }).addTo(MAP);
+                            if (followPlayer === playerId) {
+                                if (!followPlayerZoomed) {
+                                    // This is here to make sure the user can adjust zoom as a player is followed
+                                    MAP.setZoom(3)
+                                    setFollowPlayerZoomed(true);
+                                }
+                                MAP.panTo(endOfLine, 4)
+                            }
+                        }
+                    }
+
                 }
             }
-        }
+
+            for (let i = 0; i < events.length; i++) {
+                const e = events[i];
+                
+                const toBeIndex = findInsertIndex(e.time, sliderTimes);
+                if (toBeIndex < timeCurrentIndex) {
+                    if (!hideEvents && MAP) {
+                        if (preserveHistory || toBeIndex > (timeCurrentIndex - 200) ) {
+                            var killerIcon = L.divIcon({className: 'killer-icon', html: `<img src="/target.png" />`});
+                            var killerMarker = L.marker([e.source.z, e.source.x], {icon: killerIcon});
+                            killerMarker.eventTime = e.time; 
+                            killerMarker.eventType = 'killerIcon';
+                            killerMarker.addTo(MAP);
         
-        if (sliderTimes.length === 0) {
-            times = _.chain(times).uniq().sort((t) => t).value();
-            setSliderTimes(times);
-            setTimeStartLimit(times[0]);
-            setTimeEndLimit(times[times.length - 1]);
-            setTimeCurrentIndex(times.length - 1);
-        }
-
-        if (preserveHistory) {
-            setTimeStartLimit(sliderTimes[0])
-        } else {
-            setTimeStartLimit(sliderTimes[Math.max(0, timeCurrentIndex - 200)]);
-        }
-
-        function clearMap(m) {
-            for (const key in m._layers) {
-                const layer = m._layers[key];
-                if (layer._path !== undefined || layer._icon !== undefined) {
-                    m.removeLayer(layer)
+                            var polyline = L.polyline([[e.source.z, e.source.x],[e.target.z, e.target.x]], { color: 'red', weight: 2, dashArray: [10], dashOffset: 3, opacity: 0.75 });
+                            polyline.eventTime = e.time; 
+                            polyline.eventType = 'killerLine';
+                            polyline.addTo(MAP);
+                        }
+        
+                        var deathHtml = `<img src="/skull.png" /><span class="tooltiptext event event-map text-sm">${e.profileId === e.killedId ? `<strong>${e.profileNickname}</strong><br/>died` : `<strong>${e.profileNickname}</strong><br/>killed<br/><strong>${e.killedNickname}</strong>`}</span>`;
+                        var deathIcon = L.divIcon({className: 'death-icon tooltip event', html: deathHtml });
+                        var deathMarker = L.marker([e.target.z, e.target.x], {icon: deathIcon});
+                        deathMarker.eventTime = e.time; 
+                        deathMarker.eventType = 'deathIcon';
+                        deathMarker.addTo(MAP).on('click', () => highlight([[e.target.z, e.target.x], [e.source.z, e.source.x]], e.time));
+                    }
                 }
             }
-        }
+            
+            
+            if (sliderTimes.length === 0) {
+                times = _.chain(times).uniq().sort((t) => t).value();
+                setSliderTimes(times);
+                setTimeStartLimit(times[0]);
+                setTimeEndLimit(times[times.length - 1]);
+                setTimeCurrentIndex(times.length - 1);
+            }
+
+            if (preserveHistory) {
+                setTimeStartLimit(sliderTimes[0])
+            } else {
+                setTimeStartLimit(sliderTimes[Math.max(0, timeCurrentIndex - 200)]);
+            }
+
+            function clearMap(m, timeRange) {
+                for (const key in m._layers) {
+                    const layer = m._layers[key];
+                    if (layer._path !== undefined || layer._icon !== undefined) {
+                        if (layer.eventTime) {
+                            const isCurrentEvent = layer.eventTime < timeRange.start || layer.eventTime > timeRange.end;
+                            const isKillerIconOrLine = layer.eventType === 'killerIcon' || layer.eventType === 'killerLine';
+                            if (isCurrentEvent && isKillerIconOrLine) {
+                                m.removeLayer(layer);
+                            }
+
+                            const isFutureEvent = layer.eventTime > timeRange.end;
+                            const isDeathIcon = layer.eventType === 'deathIcon';
+                            if (isDeathIcon && isFutureEvent) {
+                                m.removeLayer(layer);
+                            }
+                        } else {
+                            m.removeLayer(layer);
+                        }
+                    }
+                }
+            }           
+
+        });
 
     }, [mapData, mapRef, navigate, mapViewRef, timeEndLimit, timeStartLimit, timeCurrentIndex, MAP, preserveHistory, events, hideEvents, hidePlayers, followPlayer, playerFocus]);
 
@@ -784,6 +717,67 @@ export default function Map({ raidData, profileId, raidId, positions }) {
         }
     }
 
+    function getPlayerBrain(player: TrackingRaidDataPlayers): string {
+        if(player) {
+            let botMapping = BotMapping[player.type];
+            if (!botMapping) {
+                botMapping = {
+                    type: 'UNKNOWN'
+                };
+            }
+
+            if (player.mod_SAIN_brain === "UNKNOWN" && (player.team === "Bear" || player.team === "Usec")) {
+                return "(PMC)"
+            } 
+            
+            else if (player.team === "Savage") {
+                return "(Scav)"
+            } 
+
+            else if (player.mod_SAIN_brain === 'PLAYER') {
+                return "(Human)"
+            }
+
+            return player.mod_SAIN_brain != null ? `(${player.mod_SAIN_brain.replace(/([A-Z])/g, " $1").trim()})` : "(PMC)"
+        }
+        return "(UNKNOWN)"
+    }
+
+    function getPlayerColor(player: TrackingRaidDataPlayers, index: number): string {
+
+        let botMapping = BotMapping[player.type];
+        if (!botMapping) {
+            botMapping = {
+                type: 'UNKNOWN'
+            };
+        }
+        switch (botMapping.type) {
+            case 'SCAV':
+                return "#33FF57"; // Green - Scav
+            case 'BOSS':
+                return "#FF0000"; // Red - Boss
+            case 'FOLLOWER':
+                return "#ff7b00"; // Orange - Follower
+            case 'BLOODHOUND':
+                return "#6d0000"; // Dark Red - Raider
+            case 'RAIDER':
+                return "#FF00FF"; // Magenta - Raider
+            case 'PLAYER_SCAV':
+                return "#33FF8D"; // Light Green - Scav Player
+            case 'SNIPER':
+                return "#00911a"; // Dark Green - Sniper
+            case 'GOON':
+                return "#ff005d"; // Between Magenta & Red  - Goon
+            case 'CULT':
+                return "#6f00ff"; // Dark Purple - Cultist
+            case 'OTHER':
+                return "#00eeff"; // Other - Cyan
+            default:
+                if (player.type === 'PLAYER' && player.team === 'Savage') return "#33FF57"; // Green - Scav
+                else return colors[index % colors.length]; // PMC
+        }
+    }
+
     return (
         <div className="map-container" key="map-wrapper">
             <div className='parent'>
@@ -793,6 +787,11 @@ export default function Map({ raidData, profileId, raidId, positions }) {
                             <button key={layer.value} className={`text-sm p-2 mr-2 py-1 text-sm ${layer.value === selectedLayer ? 'bg-eft text-black' : 'cursor-pointer border border-eft text-eft'} mb-2 ml-auto`} onClick={() => setSelectedLayer(layer.value)}>{layer.name}</button>
                         ))}
                     </div>
+                    <div className="ml-4">
+                        { availableStyles.map(style => (
+                            <button key={style.value} className={`text-sm p-2 mr-2 py-1 text-sm ${style.value === selectedStyle ? 'bg-eft text-black' : 'cursor-pointer border border-eft text-eft'} mb-2 ml-auto`} onClick={() => setSelectedStyle(style.value)}>{style.name}</button>
+                        ))}
+                    </div>
                     <Link to={`/p/${profileId}/raid/${raidId}?return=1`} className='text-sm p-2 py-1 text-sm cursor-pointer border border-eft text-eft mb-2 ml-auto' reloadDocument>Close</Link>
                 </nav>
                 <aside className='sidebar bg-black border border-eft mr-3 p-3 overflow-x-auto'>
@@ -800,14 +799,14 @@ export default function Map({ raidData, profileId, raidId, positions }) {
                         <strong>Legend</strong>
                         <ul>
                             { raidData.players.filter(p => p.spawnTime < timeEndLimit).map((player, index) => 
-                                <li className="flex items-center justify-between player-legend-item px-2" key={player.profileId} onMouseEnter={() => setPlayerFocus(index)} onMouseLeave={() => setPlayerFocus(null)} onClick={() => {setFollowPlayer(followPlayer === index ? 999999 : index); setFollowPlayerZoomed(false);}}>
+                                <li className="flex items-center justify-between player-legend-item px-2" key={player.profileId} onMouseEnter={() => setPlayerFocus(index)} onMouseLeave={() => setPlayerFocus(null)} onClick={() => {setFollowPlayer(followPlayer === player.profileId ? null : player.profileId); setFollowPlayerZoomed(false);}}>
                                     <div className={`flex flex-row items-center ${playerWasKilled(player.profileId, timeEndLimit)? "line-through opacity-25": ""}`}>
-                                        <span style={{width: '8px', height: '8px', borderRadius: '50%', marginRight: '8px', background : colors[index]}}></span>
+                                        <span style={{width: '8px', height: '8px', borderRadius: '50%', marginRight: '8px', background : getPlayerColor(player, index)}}></span>
                                         <span>
-                                            {player.name}
+                                            {player.name} {getPlayerBrain(player)}
                                         </span>
                                     </div>
-                                    { followPlayer === index ? 
+                                    { followPlayer === player.profileId ? 
                                         <span className='text-xs'>
                                             [FOLLOWING]
                                         </span> : ''
@@ -836,9 +835,10 @@ export default function Map({ raidData, profileId, raidId, positions }) {
                             .reverse()
                             .slice(0, 4)
                             .map((e, i) => (
-                                <div className="text-eft" key={`${e.profileId}_${i}`}>
+                                <div className="text-black" key={`${e.profileId}_${i}`}>
                                     <span className="tooltiptext event">
-                                        <strong>{e.profileNickname}</strong> killed <strong>{e.killedNickname}</strong> [<a className="underline cursor-pointer" onClick={() => highlight([[e.target.z, e.target.x], [e.source.z, e.source.x]], e.time)}>VIEW</a>]
+                                    [<a className="underline cursor-pointer" onClick={() => highlight([[e.target.z, e.target.x], [e.source.z, e.source.x]], e.time)}>VIEW</a>]{' '}
+                                    <strong>{e.profileNickname}</strong> killed <strong>{e.killedNickname}</strong> ({ItemEnMapping[e.weapon.replace('Name', 'ShortName')]} - {e.distance.toFixed(0)}m)
                                     </span>
                                 </div>
                             ))}

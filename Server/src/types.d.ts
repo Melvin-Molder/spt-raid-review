@@ -1,3 +1,5 @@
+import 'express';
+
 // Client Side Class Mirrors
 export enum ExitStatus {
   Survived = 0,
@@ -47,6 +49,7 @@ export interface TrackingPlayer {
   type: string;
   group: string;
   spawnTime: number;
+  mod_SAIN_brain: string;
 }
 
 export interface TrackingRaidKill {
@@ -81,12 +84,39 @@ export interface TrackingPlayerData {
 }
 
 export interface TrackingPlayerHealth {
-    Item1: number
-    Item2: number
+  Item1: number;
+  Item2: number;
 }
 
 // Custom
 export interface FileImport {
   datapoint: string;
   data: string;
+}
+
+export interface NotificationLimiter {
+  raid_start: boolean;
+  raid_end: boolean;
+  player: boolean;
+  kill: boolean;
+  position: boolean;
+  loot: boolean;
+}
+
+export interface RaidReviewSettings {
+  id : number;
+  key : string;
+  value : string;
+  type : string;
+  created_at : Date;
+  updated_at : Date;
+}
+
+declare module 'express' {
+  interface Request {
+      auth?: {
+          user: string;
+          password: string;
+      };
+  }
 }
